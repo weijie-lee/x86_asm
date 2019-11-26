@@ -12,6 +12,8 @@
          mem_0_4_gb_seg_sel    equ  0x08    ;整个0-4GB内存的段的选择子
 
 ;-------------------------------------------------------------------------------
+;==============================内核程序=========================================
+SECTION header vstart=0
          ;以下是系统核心的头部，用于加载核心程序 
          core_length      dd core_end       ;核心程序总长度#00
 
@@ -30,7 +32,7 @@
 
 ;===============================================================================
          [bits 32]
-;===============================================================================
+;==============================公共例程代码段===================================
 SECTION sys_routine vstart=0                ;系统公共例程代码段 
 ;-------------------------------------------------------------------------------
          ;字符串显示例程
@@ -273,6 +275,7 @@ set_up_gdt_descriptor:                      ;在GDT内安装一个新的描述符
          mov ebx,core_data_seg_sel          ;切换到核心数据段
          mov ds,ebx
 
+	 ;将gdt的内容保存到指定的位置
          sgdt [pgdt]                        ;以便开始处理GDT
 
          mov ebx,mem_0_4_gb_seg_sel
@@ -287,8 +290,9 @@ set_up_gdt_descriptor:                      ;在GDT内安装一个新的描述符
       
          add word [pgdt],8                  ;增加一个描述符的大小   
       
-         lgdt [pgdt]                        ;对GDT的更改生效 
-       
+         lgdt [pgdt]                        ;对GDT的更改生效，重新加载GDT
+
+       	 ;重新根据GDT新的界限值来生成相应的段选择子
          mov ax,[pgdt]                      ;得到GDT界限值
          xor dx,dx
          mov bx,8
@@ -326,7 +330,7 @@ make_seg_descriptor:                        ;构造存储器和系统的段描述符
 
          retf
 
-;===============================================================================
+;============================数据段=============================================
 SECTION core_data vstart=0                  ;系统核心的数据段
 ;-------------------------------------------------------------------------------
          pgdt             dw  0             ;用于设置和修改GDT 
@@ -381,8 +385,8 @@ SECTION core_data vstart=0                  ;系统核心的数据段
          cpu_brand  times 52 db 0
          cpu_brnd1        db 0x0d,0x0a,0x0d,0x0a,0
 
-;===============================================================================
-SECTION core_code vstart=0		    ;内核代码段
+;================================代码段=========================================
+SECTION core_code vstart=0
 ;-------------------------------------------------------------------------------
 load_relocate_program:                      ;加载并重定位用户程序
                                             ;输入：ESI=起始逻辑扇区号
@@ -410,7 +414,8 @@ load_relocate_program:                      ;加载并重定位用户程序
          add ebx,512                        ;低9位都为0 
          test eax,0x000001ff                ;程序的大小正好是512的倍数吗? 
          cmovnz eax,ebx                     ;不是。使用凑整的结果 
-      
+
+         ;把用户程序从磁盘读到内存
          mov ecx,eax                        ;实际需要申请的内存数量
          call sys_routine_seg_sel:allocate_memory
          mov ebx,ecx                        ;ebx -> 申请到的内存首地址
@@ -418,13 +423,14 @@ load_relocate_program:                      ;加载并重定位用户程序
          xor edx,edx
          mov ecx,512
          div ecx
-         mov ecx,eax                        ;总扇区数 
-      
+         mov ecx,eax                        ;总扇区数ecx
+
+      	 ;根据加载的地址，创建该段地址的段描述符
          mov eax,mem_0_4_gb_seg_sel         ;切换DS到0-4GB的段
          mov ds,eax
 
-         mov eax,esi                        ;起始扇区号 
-  .b1:
+         mov eax,esi                        ;起始扇区号，通过调用的函数在外部传入
+.b1:
          call sys_routine_seg_sel:read_hard_disk_0
          inc eax
          loop .b1                           ;循环读，直到读完整个用户程序
@@ -535,7 +541,7 @@ start:
          mov ebx,message_1
          call sys_routine_seg_sel:put_string
                                          
-         ;显示处理器品牌信息 
+         ;显示处理器品牌信息，信息放在eax,ebx,ecx,edx 
          mov eax,0x80000002
          cpuid
          mov [cpu_brand + 0x00],eax
