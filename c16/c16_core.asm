@@ -926,17 +926,17 @@ start:
          ;页目录表清零 
          mov ecx,1024                       ;1024个目录项
          mov ebx,0x00020000                 ;页目录的物理地址
-         xor esi,esi
+         xor esi,esi			    ;将esi寄存器清零
   .b1:
-         mov dword [es:ebx+esi],0x00000000  ;页目录表项清零 
+         mov dword [es:ebx+esi],0x00000000  ;页目录表项清零，主要是使P位清零 
          add esi,4
          loop .b1
          
-         ;在页目录内创建指向页目录自己的目录项
-         mov dword [es:ebx+4092],0x00020003 
+         ;在页目录内创建指向页目录自己的目录项，在最后一个页目录项位置4096-4=4092
+         mov dword [es:ebx+4092],0x00020003 ;(RW:1,P:1)
 
-         ;在页目录内创建与线性地址0x00000000对应的目录项
-         mov dword [es:ebx+0],0x00021003    ;写入目录项（页表的物理地址和属性）      
+         ;在页目录内创建与线性地址0x00000000（页表最开始）对应的目录项
+         mov dword [es:ebx+0],0x00021003    ;将页表项写入目录项（页表的物理地址和属性RW P）      
 
          ;创建与上面那个目录项相对应的页表，初始化页表项 
          mov ebx,0x00021000                 ;页表的物理地址
@@ -944,7 +944,7 @@ start:
          xor esi,esi
   .b2:       
          mov edx,eax
-         or edx,0x00000003                                                      
+         or edx,0x00000003                  ;该页的权限                                               
          mov [es:ebx+esi*4],edx             ;登记页的物理地址
          add eax,0x1000                     ;下一个相邻页的物理地址 
          inc esi
@@ -961,8 +961,8 @@ start:
          mov eax,0x00020000                 ;PCD=PWT=0
          mov cr3,eax
 
-         mov eax,cr0
-         or eax,0x80000000
+         mov eax,cr0                        ;开启分页在CR0中的最高，所以先取出来置位
+         or eax,0x80000000                  ;再将置位后的值写回到CR0中
          mov cr0,eax                        ;开启分页机制
 
          ;在页目录内创建与线性地址0x80000000对应的目录项
