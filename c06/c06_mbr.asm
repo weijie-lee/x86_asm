@@ -16,17 +16,19 @@
          mov ax,0xb800                 ;设置附加段基地址 
          mov es,ax
          
-         cld
          mov si,mytext                 
-         mov di,0
+         mov di,160*8
          mov cx,(number-mytext)/2      ;实际上等于 13
+         cld
          rep movsw
      
          ;得到标号所代表的偏移地址
-         mov ax,number
+         ;mov ax,number
+         mov ax,1234
          
          ;计算各个数位
-         mov bx,ax
+         ;mov bx,ax
+         mov bx,0
          mov cx,5                      ;循环次数 
          mov si,10                     ;除数 
   digit: 
@@ -37,8 +39,9 @@
          loop digit
          
          ;显示各个数位
-         mov bx,number 
-         mov si,4                      
+         ;mov bx,number 
+         mov bx, 0
+         mov si,4
    show:
          mov al,[bx+si]
          add al,0x30
