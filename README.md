@@ -9,7 +9,7 @@ ubuntu 1604
 sudo apt-get install nasm
 
 ## 运行
-进入每个文件加，执行命令 sh run.sh
+进入每个文件夹，执行命令 sh run.sh
 
-## 运行结果（第16章）
+## 运行结果（例如：第16章）
 ![avatar](https://github.com/liweijieatcs/x86_asm/blob/master/c16/c16.png)
