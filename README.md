@@ -1,15 +1,37 @@
-# x86_asm实验代码
-这是我在阅读《x86汇编语言  从实模式到保护模式》对每一章节代码的理解，并注释了部分代码
+# x86_asm 实验代码
+这是阅读《x86汇编语言 从实模式到保护模式》一书时，每一章节的实验代码，包含详细注释。
+
+本仓库适合：
+- 正在学习这本书的读者参考
+- 想了解 x86 实模式到保护模式切换全过程的爱好者学习
+- 从零编写一个最小化操作系统内核入门学习
 
 # 运行环境
-## 操作系统
-ubuntu 1604 
+## 依赖
+需要安装以下工具：
 
-## 安装nasm编译器
-sudo apt-get install nasm
+```bash
+# Ubuntu/Debian
+sudo apt-get install nasm qemu-system-x86
+```
+
+- **nasm**：x86 汇编编译器
+- **qemu-system-i386**：x86 模拟器，用来运行编译后的镜像
 
 ## 运行
-进入每个文件夹，执行命令 sh run.sh
+进入每个章节文件夹，执行脚本运行：
 
-## 运行结果（例如：第16章）
-![avatar](https://github.com/liweijieatcs/x86_asm/blob/master/c16/c16.png)
+```bash
+cd cXX
+sh run.sh
+```
+
+Qemu 会启动并显示运行结果。
+
+## 运行结果示例（第16章）
+![avatar](https://github.com/weijie-lee/x86_asm/blob/master/c16/c16.png)
+
+## 说明
+- 原书中代码基于 vga 文本模式输出，直接在 Qemu 中运行即可看到结果
+- 每个章节对应书中的内容，代码已经添加了详细注释
+- 所有汇编文件编码已转换为 UTF-8，在任何系统上都能正常显示注释

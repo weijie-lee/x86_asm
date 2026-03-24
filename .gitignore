@@ -1,0 +1,15 @@
+
+# Compiled binary files
+*.bin
+*.img
+boot_img
+*.o
+
+# Vim swap files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
