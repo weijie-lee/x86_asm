@@ -1,49 +1,123 @@
          ;代码清单8-2
          ;文件名：c08.asm
-         ;文件说明：用户程序 
+         ;文件说明：用户程序
          ;创建日期：2011-5-5 18:17
-         
+
+;===============================================================================
+; 扩展知识：
+;
+; 一、多段程序结构（Header + Code + Data + Stack）
+;     实模式下的用户程序通常由多个段组成：
+;     - 头部段（Header）：存放程序的元信息，供加载器使用。
+;       包括程序总长度、入口点地址、段重定位表等。加载器据此完成加载和重定位。
+;     - 代码段（Code）：存放可执行的机器指令。可以有多个代码段，通过远跳转/远调用切换。
+;     - 数据段（Data）：存放程序运行时需要的数据（字符串、变量等）。可以有多个数据段。
+;     - 堆栈段（Stack）：为程序提供栈空间，用于局部变量、函数调用、中断处理等。
+;     这种多段结构使程序的代码、数据和栈相互隔离，结构清晰，便于管理。
+;
+; 二、程序头部设计
+;     头部是加载器与用户程序之间的"协议"，本程序的头部布局如下：
+;     偏移    大小    内容
+;     0x00    4字节   程序总长度（包含所有段，单位：字节）
+;     0x04    2字节   入口点的偏移地址（段内偏移）
+;     0x06    4字节   入口点的段地址（加载前为段偏移，加载后被重定位为实际段地址）
+;     0x0A    2字节   段重定位表的项数
+;     0x0C    N×4字节 段重定位表（每项4字节，存放各段相对程序开头的偏移量）
+;     加载器读取头部后，先确定程序大小以加载全部扇区，再根据重定位表修正所有段地址。
+;
+; 三、SECTION 与 vstart=0
+;     SECTION name align=16 vstart=0
+;     - 每个段指定 vstart=0，意味着该段内所有标号的地址都从0开始计算。
+;     - 这样每个段都拥有独立的地址空间，段内偏移从0开始。
+;     - 配合段寄存器的正确设置，可以直接用 [标号] 访问段内数据。
+;     - 如果不使用 vstart=0，标号地址将从文件开头累加，访问时需要手动计算偏移。
+;
+; 四、resb 伪指令（保留字节）
+;     resb N
+;     - 在当前位置保留N个字节的空间，但不对其进行初始化（不写入任何值）。
+;     - 与 db 0 重复N次不同，resb 不会在目标文件中产生实际数据，仅推进汇编地址计数器。
+;     - 常用于定义堆栈空间、缓冲区等不需要初始值的内存区域。
+;     - 类似的还有 resw（保留字）和 resd（保留双字）。
+;
+; 五、VGA光标控制（端口 0x3D4/0x3D5）
+;     VGA文本模式下，光标位置通过6845 CRT控制器的寄存器管理：
+;     - 端口0x3D4：索引寄存器（写入要访问的寄存器编号）
+;     - 端口0x3D5：数据寄存器（读写索引寄存器指定的寄存器内容）
+;     光标位置是一个16位值（0~1999，对应80×25屏幕的2000个字符位置）：
+;     - 寄存器0x0E：光标位置的高8位（先写索引0x0E到0x3D4，再从0x3D5读写数据）
+;     - 寄存器0x0F：光标位置的低8位（先写索引0x0F到0x3D4，再从0x3D5读写数据）
+;     光标值的计算：行号×80 + 列号（第0行第0列=0，最后一行最后一列=1999）
+;     设置光标：先写高8位到寄存器0x0E，再写低8位到寄存器0x0F。
+;
+; 六、retf 指令（远返回）
+;     retf = RETurn Far，从栈中依次弹出IP和CS，实现跨段返回：
+;       IP ← [SS:SP]，SP+2
+;       CS ← [SS:SP]，SP+2
+;     在本程序中，retf 被巧妙地用于实现段间跳转：
+;       先将目标段地址push入栈，再将目标偏移push入栈，最后执行retf。
+;       这样retf弹出时，IP=目标偏移，CS=目标段地址，等效于 jmp far 段:偏移。
+;     这种技巧常用于需要动态计算目标地址的段间跳转场景。
+;
+; 七、屏幕滚动技术
+;     VGA文本模式下，显存起始地址为0xB8000（段地址0xB800），每个字符占2字节：
+;       低字节=ASCII码，高字节=属性（前景色+背景色+闪烁位）
+;     80列×25行 = 2000字符 = 4000字节
+;     屏幕滚动的实现方法：
+;     1. 使用 rep movsw 将第1行~第24行的内容整体上移一行（源偏移0xA0，目的偏移0x00）
+;        每行80字符×2字节=160字节=0xA0，共移动24行×80字=1920个字
+;     2. 清除最后一行：将第25行的80个字符位置写入空格（0x0720：属性07+空格20）
+;     3. 将光标设置到最后一行的开头（位置1920）
+;     这样实现了文本终端的自动滚屏效果。
+;===============================================================================
+
 ;===============================================================================
 ;程序的头部定义了整个程序的总长度，程序的起始地址，
-SECTION header vstart=0                     ;定义用户程序头部段 
+SECTION header vstart=0                     ;定义用户程序头部段，vstart=0使段内标号从0开始编址 
     ;dd data dword 占4个字节的长度
     ;dw data word 占2个字节的长度
-    program_length  dd program_end          ;定义长度，放在开头，通过[0x00]访问总长度,标号program_end表示，这个标号定义在程序的结尾处
-    
+    program_length  dd program_end          ;程序总长度（4字节），标号program_end定义在文件末尾
+                                            ;加载器通过[0x00]读取此值来确定需要加载多少扇区
+
     ;start位于段code_1内，但是不是在起始位置
-    code_entry      dw start                ;偏移地址[0x04]
-                    dd section.code_1.start ;段地址[0x06] 
-    ;充定位表的长度
-    realloc_tbl_len dw (header_end-code_1_segment)/4 ;段重定位表项个数[0x0a]
-    
-    ;段重定位表           
-    code_1_segment  dd section.code_1.start ;[0x0c]
-    code_2_segment  dd section.code_2.start ;[0x10]
-    data_1_segment  dd section.data_1.start ;[0x14]
-    data_2_segment  dd section.data_2.start ;[0x18]
-    stack_segment   dd section.stack.start  ;[0x1c]
-    
-    header_end:                
+    code_entry      dw start                ;入口点偏移地址（2字节）[0x04]，start标号在code_1段内
+                    dd section.code_1.start ;入口点段地址（4字节）[0x06]，编译时为段偏移，加载后被重定位为实际段地址
+    ;重定位表的长度
+    realloc_tbl_len dw (header_end-code_1_segment)/4 ;段重定位表项个数[0x0a]，每项4字节，用头部长度差除以4计算
+
+    ;段重定位表：每项4字节，存放各段相对于程序开头的偏移量
+    ;加载器会遍历此表，将每个偏移量转换为加载后的实际段地址
+    code_1_segment  dd section.code_1.start ;代码段1的偏移[0x0c]
+    code_2_segment  dd section.code_2.start ;代码段2的偏移[0x10]
+    data_1_segment  dd section.data_1.start ;数据段1的偏移[0x14]
+    data_2_segment  dd section.data_2.start ;数据段2的偏移[0x18]
+    stack_segment   dd section.stack.start  ;堆栈段的偏移[0x1c]
+
+    header_end:                             ;头部段结束标号，用于计算重定位表项数                
     
 ;===============================================================================
-SECTION code_1 align=16 vstart=0         ;定义代码段1（16字节对齐） 
-put_string:                              ;显示串(0结尾)。
-                                         ;输入：DS:BX=串地址
+SECTION code_1 align=16 vstart=0         ;定义代码段1（16字节对齐，段内地址从0开始）
+
+;--- put_string：逐字符显示以0结尾的字符串 ---
+;    输入参数：DS:BX = 字符串的起始地址
+;    字符串必须以字节0作为结束标志
+put_string:
          mov cl,[bx]
-         or cl,cl                        ;cl=0 ?
+         or cl,cl                        ;用or自身来检测cl是否为0（比cmp cl,0更高效，且设置零标志ZF）
          ;cmp cl,0
          ;cmp cl,999
-         jz .exit                        ;是的，返回主程序 
-         call put_char
-         inc bx                          ;下一个字符 
-         jmp put_string
+         jz .exit                        ;ZF=1即cl=0，字符串结束，返回调用者
+         call put_char                   ;调用单字符显示子程序，显示cl中的字符
+         inc bx                          ;BX指向字符串中的下一个字符
+         jmp put_string                  ;继续循环处理下一个字符
 
    .exit:
-         ret
+         ret                             ;字符串显示完毕，近返回到调用者
 
 ;-------------------------------------------------------------------------------
-put_char:                                ;显示一个字符
-                                         ;输入：cl=字符ascii
+;--- put_char：在当前光标位置显示一个字符，并自动处理回车、换行和滚屏 ---
+;    输入参数：cl = 要显示的字符的ASCII码
+;    支持特殊字符：0x0D（回车，光标移到行首）、0x0A（换行，光标下移一行）
+put_char:
          push ax
          push bx
          push cx
@@ -51,85 +125,92 @@ put_char:                                ;显示一个字符
          push ds
          push es
 
-         ;以下取当前光标位置
-         mov dx,0x3d4			 ;索引寄存器端口0x3d4
-         mov al,0x0e			 ;提供光标的高8位
-         out dx,al
-         mov dx,0x3d5			 ;读写寄存器
-         in al,dx                        ;高8位，放在al中 
-         
-         mov ah,al			 ;将al中的数据放到ah中
+         ;===== 读取当前光标位置（16位值，范围0~1999） =====
+         ;VGA的6845 CRT控制器通过索引/数据端口对来访问内部寄存器
+         mov dx,0x3d4                    ;端口0x3D4：CRT控制器索引寄存器
+         mov al,0x0e                     ;选择寄存器0x0E：光标位置高8位寄存器
+         out dx,al                       ;写入索引号，选中目标寄存器
+         mov dx,0x3d5                    ;端口0x3D5：CRT控制器数据寄存器
+         in al,dx                        ;从数据端口读取光标位置的高8位
+
+         mov ah,al                       ;将高8位暂存到AH中
 
          mov dx,0x3d4
-         mov al,0x0f
+         mov al,0x0f                     ;选择寄存器0x0F：光标位置低8位寄存器
          out dx,al
          mov dx,0x3d5
-         in al,dx                        ;获得的低8位放在al中，ah没有变化，合起来ax就表示光标位置 
-         mov bx,ax                       ;BX=代表光标位置的16位数
+         in al,dx                        ;从数据端口读取光标位置的低8位，此时AX=完整的16位光标位置
+         mov bx,ax                       ;BX=当前光标位置（行号×80+列号）
 
-	 ;处理回车和换行符
-         cmp cl,0x0d                     ;回车符？如果不是则跳转到put_0a
-         jnz .put_0a                     ;不是。看看是不是换行等字符 
-         mov ax,bx                       ;此句略显多余，但去掉后还得改书，麻烦 
-         mov bl,80                       
-         div bl
-         mul bl
-         mov bx,ax
-         jmp .set_cursor
+         ;===== 处理回车符（0x0D）：将光标移到当前行的行首 =====
+         cmp cl,0x0d                     ;判断是否为回车符（Carriage Return）
+         jnz .put_0a                     ;不是回车符，跳到换行符检测
+         mov ax,bx                       ;AX=当前光标位置（此句看似多余，但保持与书中一致）
+         mov bl,80                       ;每行80个字符
+         div bl                          ;AX÷80，商AL=行号，余数AH=列号
+         mul bl                          ;AL×80=该行起始位置（即列号归零后的光标值）
+         mov bx,ax                       ;BX=行首位置
+         jmp .set_cursor                 ;直接跳转去设置光标，不显示字符
 
+         ;===== 处理换行符（0x0A）：光标下移一行（列不变） =====
  .put_0a:
-         cmp cl,0x0a                     ;换行符？如果不是换行符，跳转到put_other
-         jnz .put_other                  ;不是，那就正常显示字符 
-         add bx,80
-         jmp .roll_screen
+         cmp cl,0x0a                     ;判断是否为换行符（Line Feed）
+         jnz .put_other                  ;不是换行符，跳到普通字符处理
+         add bx,80                       ;光标位置加80，即下移一行（同一列）
+         jmp .roll_screen                ;换行后可能超出屏幕，需检查是否滚屏
 
- .put_other:                             ;正常显示字符
-         mov ax,0xb800
+         ;===== 处理普通可显示字符：写入显存并推进光标 =====
+ .put_other:
+         mov ax,0xb800                   ;VGA文本模式显存段地址（物理地址0xB8000）
          mov es,ax
-         shl bx,1
-         mov [es:bx],cl
+         shl bx,1                        ;光标位置×2=显存中的字节偏移（每字符占2字节）
+         mov [es:bx],cl                  ;将字符ASCII码写入显存（低字节=字符，高字节=属性不变）
 
-         ;以下将光标位置推进一个字符
-         shr bx,1
-         add bx,1
+         ;将光标向后推进一个字符位置
+         shr bx,1                        ;恢复光标位置（字节偏移÷2）
+         add bx,1                        ;光标前进1个位置
 
+         ;===== 检查是否需要滚动屏幕 =====
  .roll_screen:
-         cmp bx,2000                     ;光标超出屏幕？如果没有就重新设置光标，如果超出了，就滚动屏幕
-         jl .set_cursor
+         cmp bx,2000                     ;光标位置≥2000？（80×25=2000，超出屏幕底部）
+         jl .set_cursor                  ;未超出，直接设置光标位置即可
 
+         ;--- 屏幕滚动：将第1~24行上移一行，覆盖第0行 ---
          mov ax,0xb800
-         mov ds,ax
-         mov es,ax
-         cld
-         mov si,0xa0
-         mov di,0x00
-         mov cx,1920
-         rep movsw
-         mov bx,3840                     ;清除屏幕最底一行
-         mov cx,80
+         mov ds,ax                       ;DS=显存段，作为源地址段
+         mov es,ax                       ;ES=显存段，作为目的地址段
+         cld                             ;清除方向标志DF，使movsw正向移动（地址递增）
+         mov si,0xa0                     ;源起始偏移：第1行开头（1×80×2=0xA0=160）
+         mov di,0x00                     ;目的起始偏移：第0行开头
+         mov cx,1920                     ;移动字数：24行×80字符=1920个字（每个字=字符+属性）
+         rep movsw                       ;批量复制：将第1~24行内容复制到第0~23行
+
+         ;--- 清除屏幕最后一行（第24行） ---
+         mov bx,3840                     ;第24行起始字节偏移（24×80×2=3840）
+         mov cx,80                       ;最后一行共80个字符位置
  .cls:
-         mov word[es:bx],0x0720
-         add bx,2
-         loop .cls
+         mov word[es:bx],0x0720          ;写入：属性07（白色前景/黑色背景）+ 空格20h
+         add bx,2                        ;下一个字符位置（每个占2字节）
+         loop .cls                       ;循环清除80个字符
 
-         mov bx,1920
+         mov bx,1920                     ;滚屏后光标设置在最后一行行首（第24行第0列=1920）
 
-	;重新设置光标位置
+         ;===== 设置新的光标位置 =====
  .set_cursor:
          mov dx,0x3d4
-         mov al,0x0e
+         mov al,0x0e                     ;选择光标位置高8位寄存器
          out dx,al
-         
+
          mov dx,0x3d5
-         mov al,bh
+         mov al,bh                       ;写入光标位置的高8位
          out dx,al
-         
+
          mov dx,0x3d4
-         mov al,0x0f
+         mov al,0x0f                     ;选择光标位置低8位寄存器
          out dx,al
-         
+
          mov dx,0x3d5
-         mov al,bl
+         mov al,bl                       ;写入光标位置的低8位
          out dx,al
 
          pop es
@@ -139,56 +220,70 @@ put_char:                                ;显示一个字符
          pop bx
          pop ax
 
-         ret
+         ret                             ;近返回到put_string循环
 
 ;-------------------------------------------------------------------------------
+;--- start：用户程序主入口点 ---
+;    由MBR通过 jmp far [0x04] 跳转到此处执行
+;    进入时：DS和ES指向用户程序头部段（由加载器设置）
   start:
-  	 ;从MBR跳转到应用程序，首先要切换各个段寄存器，以便访问自己的数据
-  	 ;数据段CS有加载器负责加载到了物理内存phy_base处。
-         ;初始执行时，DS和ES指向用户程序头部段
-         mov ax,[stack_segment]           ;设置到用户程序自己的堆栈 
-         mov ss,ax
-         mov sp,stack_end		  ;栈保留256，地址是0~255，那这句相当于mov sp,255
+         ;从MBR跳转到应用程序，首先要切换各个段寄存器，以便访问自己的数据
+         ;代码段CS已由加载器通过远跳转自动设置为code_1段的段地址
+         ;但DS/ES仍然指向头部段，需要根据需要切换
+
+         ;===== 设置用户程序自己的堆栈 =====
+         mov ax,[stack_segment]          ;从头部重定位表读取堆栈段的实际段地址
+         mov ss,ax                       ;设置SS指向用户程序的堆栈段
+         mov sp,stack_end                ;SP=256（resb 256保留的空间），栈从高地址向低地址增长
          ;mov sp,255
-         
-         mov ax,[data_1_segment]          ;设置到用户程序自己的数据段,不能再用ds访问程序的头部了
-         mov ds,ax
 
-         mov bx,msg0
-         call put_string                  ;显示第一段信息 
+         ;===== 切换数据段到data_1，显示第一段信息 =====
+         mov ax,[data_1_segment]         ;从头部读取数据段1的实际段地址
+         mov ds,ax                       ;DS指向data_1段，此后不能再通过DS访问程序头部
 
-         push word [es:code_2_segment]	  ;压入段起始地址
-         mov ax,begin
-         push ax                          ;可以直接push begin,80386+，压入段的偏移地址
-         
-         retf                             ;转移到代码段2执行 
-         
+         mov bx,msg0                     ;BX=字符串msg0在data_1段内的偏移地址（vstart=0）
+         call put_string                 ;调用字符串显示子程序，在屏幕上显示msg0的内容
+
+         ;===== 利用retf实现到代码段2的远跳转 =====
+         ;retf会从栈中弹出IP和CS，因此先按逆序压入目标段地址和偏移
+         push word [es:code_2_segment]   ;压入code_2段的段地址（通过ES访问头部，因为DS已切换）
+         mov ax,begin                    ;begin是code_2段中的标号（偏移地址）
+         push ax                         ;压入目标偏移地址（80386+可直接push begin）
+
+         retf                            ;远返回：弹出IP=begin, CS=code_2段地址，跳转到代码段2
+
+  ;--- 从代码段2返回后继续执行 ---
   continue:
-         mov ax,[es:data_2_segment]       ;段寄存器DS切换到数据段2 
-         mov ds,ax
-         
-         mov bx,msg1
-         call put_string                  ;显示第二段信息 
+         mov ax,[es:data_2_segment]      ;通过ES（仍指向头部段）读取数据段2的段地址
+         mov ds,ax                       ;DS切换到数据段2
 
-         jmp $ 
+         mov bx,msg1                     ;BX=字符串msg1在data_2段内的偏移地址
+         call put_string                 ;显示第二段信息
+
+         jmp $                           ;无限循环：程序在此处停机（$=当前指令地址） 
 
 ;===============================================================================
-SECTION code_2 align=16 vstart=0          ;定义代码段2（16字节对齐）
+SECTION code_2 align=16 vstart=0          ;定义代码段2（16字节对齐，段内地址从0开始）
 
+;--- begin：代码段2的入口，由代码段1通过retf跳转到此 ---
+;    执行完后再通过retf跳回代码段1的continue处
   begin:
-         push word [es:code_1_segment]    ;压入段1的基地址
-         mov ax,continue
-         push ax                          ;可以直接push continue,80386+
-         
-         retf                             ;转移到代码段1接着执行，模拟段返回，实现段转移
+         push word [es:code_1_segment]    ;压入code_1段的段地址（ES指向头部段）
+         mov ax,continue                  ;continue是code_1段中的标号（偏移地址）
+         push ax                          ;压入目标偏移地址（80386+可直接push continue）
+
+         retf                             ;远返回：弹出IP=continue, CS=code_1段地址
+                                          ;利用retf模拟远跳转，从代码段2返回代码段1继续执行
          
 ;===============================================================================
-SECTION data_1 align=16 vstart=0
+SECTION data_1 align=16 vstart=0          ;数据段1（16字节对齐），存放第一段显示信息
 
     msg0 db '  This is NASM - the famous Netwide Assembler. '
          db 'Back at SourceForge and in intensive development! '
          db 'Get the current versions from http://www.nasm.us/.'
-         ;0x0d表示回车,0x0a表示换行
+         ;0x0D=回车符(Carriage Return)：光标回到行首
+         ;0x0A=换行符(Line Feed)：光标下移一行
+         ;连续的0x0D,0x0A实现"回车+换行"效果
          db 0x0d,0x0a,0x0d,0x0a
          db '  Example code for calculate 1+2+...+1000:',0x0d,0x0a,0x0d,0x0a
          db '     xor dx,dx',0x0d,0x0a
@@ -203,24 +298,27 @@ SECTION data_1 align=16 vstart=0
          db '     jle @@',0x0d,0x0a
          ;db 999
          db '     ... ...(Some other codes)',0x0d,0x0a,0x0d,0x0a
-         db 0
+         db 0                              ;字符串结束标志（字节0），put_string据此判断串结尾
 
 ;===============================================================================
-SECTION data_2 align=16 vstart=0
+SECTION data_2 align=16 vstart=0          ;数据段2（16字节对齐），存放第二段显示信息
 
     msg1 db '  The above contents is written by LeeChung. '
          db '2011-05-06'
          ;db 999
-         db 0
+         db 0                              ;字符串结束标志（字节0）
 
 ;===============================================================================
-SECTION stack align=16 vstart=0		;用section.stack.start表示堆栈的开始
-           
-         resb 256			;保留256字节，但是并不初始化他们，那汇编地址是0~255
+SECTION stack align=16 vstart=0            ;堆栈段（16字节对齐），用section.stack.start表示段起始地址
 
-stack_end:  				;用该标号表示堆栈的结束
+         resb 256                          ;保留256字节作为栈空间（不初始化），汇编地址范围0~255
+                                           ;resb仅推进地址计数器，不在目标文件中产生实际数据
+
+stack_end:                                 ;栈结束标号，值为256，用于初始化SP
+                                           ;SP=256，第一次push时SP先减2变为254，写入[254]~[255]
 
 ;===============================================================================
-;这里不能用vstart,那这里的其实地址就要从这个汇编文件的头部开始计算
+;尾部段不使用vstart，其标号program_end的值从文件开头累加计算
+;这样program_end就等于整个程序的总字节数，供头部的program_length使用
 SECTION trail align=16
-program_end:
+program_end:                               ;整个程序的结束标号，其值=程序总长度

@@ -1,71 +1,123 @@
          ;代码清单9-2
          ;文件名：c09_2.asm
-         ;文件说明：用于演示BIOS中断的用户程序 
+         ;文件说明：用于演示 BIOS 中断的用户程序
          ;创建日期：2012-3-28 20:35
-         
+
 ;===============================================================================
-SECTION header vstart=0                     ;定义用户程序头部段 
-    program_length  dd program_end          ;程序总长度[0x00]
-    
+; 【扩展知识】本程序涉及的 BIOS 中断服务与相关概念
+;===============================================================================
+;
+; ■ BIOS 中断服务
+;   BIOS（基本输入输出系统）在开机时初始化硬件，并在中断向量表中安装一系列
+;   中断服务例程（ISR），供操作系统和用户程序通过 INT 指令调用。
+;   调用方式：将功能号放入 AH，参数放入其他寄存器，然后执行 INT n。
+;
+; ■ INT 0x10 —— 视频服务（Video Services）
+;   AH=0x0E：TTY（电传打字机）模式输出字符
+;     功能：在当前光标位置显示一个字符，并自动移动光标到下一位置。
+;           如果到达行末会自动换行，到达屏幕底部会自动滚屏。
+;     输入：AL = 要显示的字符的 ASCII 码
+;           BL = 前景色（仅在图形模式下有效）
+;           BH = 页号（通常为 0）
+;     特点：自动处理回车 (0x0D)、换行 (0x0A)、退格 (0x08) 等控制字符。
+;     这是最简便的字符输出方式——不需要自己管理光标和滚屏。
+;
+; ■ INT 0x16 —— 键盘服务（Keyboard Services）
+;   AH=0x00：从键盘缓冲区读取一个按键（阻塞式）
+;     功能：如果键盘缓冲区中有按键数据，立即返回；否则等待用户按键。
+;     输出：AH = 按键的扫描码（Scan Code，与物理按键位置对应）
+;           AL = 按键的 ASCII 码（若为功能键等无 ASCII 码的键，AL=0）
+;     键盘缓冲区是一个 FIFO 环形队列（位于 BIOS 数据区 0040:001E~003D），
+;     最多缓存 15 个按键。
+;
+; ■ 直接硬件操作 vs BIOS 中断调用
+;   对比本章的两个程序：
+;     c09_1.asm —— 直接操作硬件（通过 IN/OUT 指令访问 RTC、8259A、VGA 端口）
+;       优点：速度快，控制精细，适合对时序和性能有高要求的场景
+;       缺点：需要了解硬件细节，代码复杂，移植性差
+;     c09_2.asm —— 使用 BIOS 中断服务（通过 INT 指令调用）
+;       优点：接口简洁，代码简短，BIOS 屏蔽了硬件差异，移植性好
+;       缺点：调用开销大（中断门切换、BIOS 内部还是要操作硬件），速度较慢
+;   实际开发中，简单任务（如文本输出、读取按键）常用 BIOS 中断；
+;   高性能或特殊需求（如实时时钟中断处理）则需要直接操作硬件。
+;
+;===============================================================================
+SECTION header vstart=0                     ;定义用户程序头部段
+    program_length  dd program_end          ;程序总长度（字节），加载器据此决定读多少扇区[0x00]
+
     ;用户程序入口点
-    code_entry      dw start                ;偏移地址[0x04]
-                    dd section.code.start   ;段地址[0x06] 
-    
+    code_entry      dw start                ;入口偏移地址[0x04]
+                    dd section.code.start   ;入口段地址（加载器会用段基址重定位）[0x06]
+
     realloc_tbl_len dw (header_end-realloc_begin)/4
-                                            ;段重定位表项个数[0x0a]
-    
+                                            ;段重定位表项个数（加载器遍历此表进行重定位）[0x0a]
+
     realloc_begin:
-    ;段重定位表           
-    code_segment    dd section.code.start   ;[0x0c]
-    data_segment    dd section.data.start   ;[0x14]
-    stack_segment   dd section.stack.start  ;[0x1c]
+    ;段重定位表——加载器读取每项的汇编阶段段地址，加上加载基址，回写为运行时段地址
+    code_segment    dd section.code.start   ;代码段起始汇编地址[0x0c]
+    data_segment    dd section.data.start   ;数据段起始汇编地址[0x14]
+    stack_segment   dd section.stack.start  ;栈段起始汇编地址[0x1c]
     
 header_end:                
     
 ;===============================================================================
-SECTION code align=16 vstart=0           ;定义代码段（16字节对齐） 
+SECTION code align=16 vstart=0           ;定义代码段（16 字节对齐）
+
+;-------------------------------------------------------------------------------
+; 主程序入口
+; 功能：1) 使用 INT 0x10 TTY 模式输出欢迎信息
+;       2) 进入循环，等待按键并回显（演示 INT 0x16 + INT 0x10 配合）
+;-------------------------------------------------------------------------------
 start:
-      mov ax,[stack_segment]
-      mov ss,ax
-      mov sp,ss_pointer
-      mov ax,[data_segment]
-      mov ds,ax
-      
-      mov cx,msg_end-message
-      mov bx,message
-      
+      mov ax,[stack_segment]             ;从头部获取重定位后的栈段地址
+      mov ss,ax                          ;设置栈段寄存器
+      mov sp,ss_pointer                  ;设置栈指针到栈顶
+      mov ax,[data_segment]              ;从头部获取重定位后的数据段地址
+      mov ds,ax                          ;设置数据段寄存器
+
+      ;--- 第一阶段：使用 INT 0x10 AH=0x0E 逐字符输出欢迎信息 ---
+      mov cx,msg_end-message             ;CX = 要显示的字符总数（用标号差计算）
+      mov bx,message                     ;BX = 消息起始偏移地址（DS:BX 指向字符串）
+
  .putc:
-      mov ah,0x0e
-      mov al,[bx]
-      int 0x10
-      inc bx
-      loop .putc
+      mov ah,0x0e                        ;功能号 0x0E：TTY 模式输出字符
+                                         ;BIOS 会自动管理光标移动、换行和滚屏
+      mov al,[bx]                        ;从 DS:BX 读取当前字符到 AL
+      int 0x10                           ;调用 BIOS 视频中断——显示 AL 中的字符
+      inc bx                             ;BX 指向下一个字符
+      loop .putc                         ;CX-1，若 CX≠0 则继续循环
 
+      ;--- 第二阶段：按键回显循环（读取键盘输入并显示在屏幕上）---
  .reps:
-      mov ah,0x00
-      int 0x16
-      
-      mov ah,0x0e
-      mov bl,0x07
-      int 0x10
+      mov ah,0x00                        ;功能号 0x00：从键盘读取一个按键（阻塞等待）
+                                         ;返回 AH=扫描码，AL=ASCII 码
+      int 0x16                           ;调用 BIOS 键盘中断——等待并读取按键
 
-      jmp .reps
+      mov ah,0x0e                        ;功能号 0x0E：TTY 模式输出字符
+                                         ;AL 中已保存刚读到的 ASCII 码，直接输出
+      mov bl,0x07                        ;BL = 前景色属性（0x07=白色，图形模式下有效）
+      int 0x10                           ;调用 BIOS 视频中断——回显用户按下的字符
+
+      jmp .reps                          ;无限循环，持续等待按键并回显
 
 ;===============================================================================
-SECTION data align=16 vstart=0
+SECTION data align=16 vstart=0           ;数据段（16 字节对齐）
 
     message       db 'Hello, friend!',0x0d,0x0a
+                                         ;问候语 + 回车换行
                   db 'This simple procedure used to demonstrate '
                   db 'the BIOS interrupt.',0x0d,0x0a
+                                         ;说明信息 + 回车换行
                   db 'Please press the keys on the keyboard ->'
-    msg_end:
-                   
+                                         ;提示用户按键
+    msg_end:                             ;消息结束标号（用于计算消息长度：msg_end - message）
+
 ;===============================================================================
-SECTION stack align=16 vstart=0
-           
-                 resb 256
-ss_pointer:
- 
+SECTION stack align=16 vstart=0          ;栈段（16 字节对齐）
+
+                 resb 256                ;预留 256 字节栈空间
+ss_pointer:                              ;栈顶标号（栈从此处向低地址增长）
+
 ;===============================================================================
-SECTION program_trail
-program_end:
+SECTION program_trail                    ;程序尾部段（仅用于标记程序总长度）
+program_end:                             ;program_length 引用此标号计算总字节数

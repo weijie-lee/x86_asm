@@ -1,46 +1,70 @@
          ;代码清单17-3
          ;文件名：c17_1.asm
-         ;文件说明：用户程序 
-         ;创建日期：2012-07-14 15:46   
+         ;文件说明：用户任务A（抢占式多任务演示）
+         ;创建日期：2012-07-14 15:46
+;
+;============================ 扩展知识 ==========================================
+;
+; 【抢占式多任务——用户程序视角】
+;   本程序是两个并发运行的用户任务之一（另一个是c17_2.asm）。
+;   程序在无限循环中反复打印标记字符串";;;;;;;"，看似永远不会让出CPU。
+;   然而，内核中的RTC实时时钟中断（INT 0x70）每秒触发一次，
+;   调度器会强制中断当前任务，通过硬件TSS切换将CPU交给另一个任务。
+;
+; 【用户无需协作式让步】
+;   与协作式多任务不同，用户程序不需要主动调用yield()或int指令来让出CPU。
+;   硬件定时器中断是"透明"的——程序完全不知道自己被暂停和恢复过。
+;   这保证了即使某个程序陷入死循环，其他任务仍能获得CPU时间。
+;
+; 【交错输出证明并发】
+;   任务A打印";;;"标记，任务B打印"$$$"标记。
+;   在屏幕上可以观察到两种标记交替出现，直观证明了抢占式调度的效果。
+;   每次任务切换的时机取决于RTC中断到达时程序的执行位置。
+;
+;===============================================================================
 
-         program_length   dd program_end          ;程序总长度#0x00
-         entry_point      dd start                ;程序入口点#0x04
-         salt_position    dd salt_begin           ;SALT表起始偏移量#0x08 
-         salt_items       dd (salt_end-salt_begin)/256 ;SALT条目数#0x0C
+         program_length   dd program_end          ;程序总字节数#0x00（内核据此计算加载大小）
+         entry_point      dd start                ;程序入口点#0x04（内核填入TSS的EIP域）
+         salt_position    dd salt_begin           ;U-SALT表起始偏移量#0x08
+         salt_items       dd (salt_end-salt_begin)/256 ;U-SALT条目数#0x0C
 
 ;-------------------------------------------------------------------------------
 
-         ;符号地址检索表
-         salt_begin:                                     
+         ;用户符号地址检索表（U-SALT）
+         ;每个条目256字节的系统服务名称，内核加载时将名称替换为调用门选择子+偏移
+         salt_begin:
 
          PrintString      db  '@PrintString'
                      times 256-($-PrintString) db 0
-                     
+
          TerminateProgram db  '@TerminateProgram'
                      times 256-($-TerminateProgram) db 0
 
          ReadDiskData     db  '@ReadDiskData'
                      times 256-($-ReadDiskData) db 0
-         
+
          PrintDwordAsHex  db  '@PrintDwordAsHexString'
                      times 256-($-PrintDwordAsHex) db 0
-        
+
          salt_end:
 
          message_0        db  '  User task A->;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;'
-                          db  0x0d,0x0a,0
+                          db  0x0d,0x0a,0      ;以回车换行结尾的标记字符串
 
 ;-------------------------------------------------------------------------------
-      [bits 32]
+      [bits 32]                                ;32位保护模式代码
 ;-------------------------------------------------------------------------------
 
 start:
-          
-         mov ebx,message_0
-         call far [PrintString]
-         jmp start
-                  
-         call far [TerminateProgram]              ;退出，并将控制权返回到核心 
-    
+         ;无限循环：反复打印标记字符串
+         ;看似独占CPU，实际被RTC中断抢占调度
+         mov ebx,message_0                     ;EBX=字符串线性地址
+         call far [PrintString]                ;通过调用门调用内核的put_string
+         jmp start                             ;跳回循环头部继续打印
+
+         ;以下代码永远不会执行到（因为jmp start形成死循环）
+         ;如果需要正常退出，应把jmp start改为条件跳转
+         call far [TerminateProgram]           ;通过调用门请求内核终止本任务
+
 ;-------------------------------------------------------------------------------
 program_end:
