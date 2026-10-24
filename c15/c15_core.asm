@@ -2,6 +2,9 @@
          ;文件名：c15_core.asm
          ;文件说明：保护模式微型核心程序
          ;创建日期：2011-11-19 21:40
+         ;
+         ;【本次复核】与第14章相同的两处 shr 已写明 dword。
+         ;  本内核与 c15.asm 都能汇编，但没有引导扇区。见 实验报告.md
 
 ;============================ 扩展知识 ========================================
 ;
@@ -783,7 +786,8 @@ load_relocate_program:                      ;加载并重定位用户程序
          mov ecx,4096
          mov eax,ecx                        ;为生成堆栈高端地址做准备
          mov [es:esi+0x28],ecx
-         shr [es:esi+0x28],12               ;登记1特权级堆栈尺寸到TCB（以4KB为单位）
+         shr dword [es:esi+0x28],12         ;4096>>12=1，按页登记1特权级堆栈尺寸
+                                            ;必须写 dword：NASM 2.16 不会从立即数推断内存操作数宽度
          call sys_routine_seg_sel:allocate_memory
          add eax,ecx                        ;堆栈基地址=高端地址
          mov [es:esi+0x2c],eax              ;登记1特权级堆栈基地址到TCB
@@ -800,7 +804,8 @@ load_relocate_program:                      ;加载并重定位用户程序
          mov ecx,4096
          mov eax,ecx                        ;为生成堆栈高端地址做准备
          mov [es:esi+0x36],ecx
-         shr [es:esi+0x36],12               ;登记2特权级堆栈尺寸到TCB（以4KB为单位）
+         shr dword [es:esi+0x36],12         ;4096>>12=1，按页登记2特权级堆栈尺寸
+                                            ;必须写 dword，与 0 特权级那条 shr dword 保持一致
          call sys_routine_seg_sel:allocate_memory
          add eax,ecx                        ;堆栈基地址=高端地址
          mov [es:esi+0x3a],ecx              ;登记2特权级堆栈基地址到TCB
