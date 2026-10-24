@@ -1101,6 +1101,10 @@ start:
          ltr cx
 
          ;========== 第6步：加载用户任务A（扇区50）==========
+         ;本仓库没有第18章的用户任务。扇区50若全是0，头部“程序长度”就是0。
+         ;load_relocate_program 把长度右移12位得到页数，再交给 loop。
+         ;loop 会先把 ECX 减1；ECX 从0减1变成 0xFFFFFFFF，于是循环约42亿次，
+         ;内核停在这里，屏幕只保留前面已经打印的三段内核信息。
          alloc_core_linear
 
          mov word [ebx+0x04],0              ;空闲
